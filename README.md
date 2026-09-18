@@ -1,6 +1,6 @@
 # IPv4 子网规划台
 
-一个纯本地的 IPv4 子网规划工具：在互不重叠的根网段中，以树形地址空间可视化管理命名保留段与子网分配，支持按主机数自动申请最小可用子网、迁移预演、撤销重做、规划 JSON 导入导出与口令加密的备份导出/导入。
+一个纯本地的 IPv4 子网规划工具：在互不重叠的根网段中，以树形地址空间可视化管理命名保留段与子网分配，支持按主机数自动申请最小可用子网、**批量申请（逐行预演、整批原子加入）**、迁移预演、撤销重做、规划 JSON 导入导出与口令加密的备份导出/导入。
 
 技术栈：**React 18 + TypeScript + Vite + ipaddr.js**，无任何后端依赖；规划以**修订图（revision graph）持久化在浏览器 localStorage**，并通过 **BroadcastChannel 在本机多个标签页之间协同编辑**；加密备份基于 **Web Crypto API**（PBKDF2-SHA-256 + AES-GCM-256）在浏览器内完成。
 
@@ -26,7 +26,7 @@ npm run dev
 ### 其他命令
 
 ```bash
-npm test            # 运行规划引擎与协同同步单元测试（vitest，124 项）
+npm test            # 运行规划引擎与协同同步单元测试（vitest，141 项）
 npm run build       # 类型检查 + 生产构建（输出 dist/）
 npm run preview     # 预览生产构建（http://localhost:4173）
 ```
@@ -45,6 +45,10 @@ npm run preview     # 预览生产构建（http://localhost:4173）
 ### 分配
 - **命名保留段**：指定名称 + CIDR，校验对齐、越界与重叠；
 - **按主机数申请**：输入所需主机数，自动计算最小前缀（网络地址与广播地址不计入容量；/31 按 RFC 3021 计 2，/32 计 1），并在全部根网段（或指定根网段）中安置到**最低可用地址**；
+- **批量申请**：「新建分配」面板的「**批量申请…**」弹窗中逐行填写**分配名称、主机数、可选根网段（自动/指定）与备注**；
+  - 系统**按输入顺序**为每行计算最小前缀，并在指定根网段（或全部根网段）中寻找**最低可用地址**——前序行立即计入占用，后序行自动避开；
+  - 弹窗实时预演并展示每行的**预分配 CIDR、可用主机容量、落位根网段与失败原因（带行号）**：名称为空、主机数非法、指定根网段不存在记为「非法」，空间不足记为「空间不足」；完全空白的行忽略；
+  - **任一行非法或空间不足时禁止提交且不改变规划**；全部通过后所有分配以**一次可撤销修订原子加入**（一次撤销即整批回退）；
 - 所有分配强制对齐 CIDR 边界，越界与重叠一律拒绝；
 - 每条分配展示网络地址、广播地址、可用主机数与所属根网段。
 
@@ -153,7 +157,7 @@ npm run preview     # 预览生产构建（http://localhost:4173）
 │   │   ├── reverseDns.ts   # 反向 DNS：in-addr.arpa 区拆分、RFC 2317 委派、BIND 片段生成
 │   │   ├── prefixPolicy.ts # 前缀策略：prefix-list 规则解析、有序命中判定、文本报告
 │   │   ├── model.ts        # 数据模型、校验、JSON 导入导出
-│   │   ├── planner.ts      # 最低可用地址分配、迁移预演、地址空间树
+│   │   ├── planner.ts      # 最低可用地址分配、批量申请预演、迁移预演、地址空间树
 │   │   ├── revisionStore.ts # 修订图：localStorage 持久化、BroadcastChannel 同步、分叉/合并判定
 │   │   ├── cryptoBackup.ts  # 加密备份信封：PBKDF2-SHA-256 派生 AES-GCM-256，Base64 版本化信封
 │   │   ├── ip.test.ts      # 引擎单元测试
@@ -161,9 +165,10 @@ npm run preview     # 预览生产构建（http://localhost:4173）
 │   │   ├── reverseDns.test.ts
 │   │   ├── prefixPolicy.test.ts
 │   │   ├── planner.test.ts
+│   │   ├── batchPlanner.test.ts
 │   │   ├── revisionStore.test.ts
 │   │   └── cryptoBackup.test.ts
-│   ├── components/         # 工具栏、根网段、树视图、分配清单、迁移预演/DHCP 池/反向 DNS/前缀策略/加密备份弹窗等
+│   ├── components/         # 工具栏、根网段、树视图、分配清单、批量申请/迁移预演/DHCP 池/反向 DNS/前缀策略/加密备份弹窗等
 │   ├── App.tsx             # 状态与历史栈（撤销/重做）、迁移流程编排
 │   └── main.tsx
 └── package.json

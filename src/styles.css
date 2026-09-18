@@ -514,6 +514,78 @@ tr.policy-permit td {
   width: 780px;
 }
 
+/* ---- 批量申请 ---- */
+.batch-entry {
+  margin-top: 8px;
+}
+
+.batch-modal {
+  width: 980px;
+}
+
+.batch-table-wrap table {
+  font-size: 12.5px;
+}
+
+.batch-table-wrap td {
+  padding: 4px 6px;
+  vertical-align: middle;
+}
+
+.batch-table-wrap input,
+.batch-table-wrap select {
+  padding: 5px 8px;
+  font-size: 12.5px;
+  min-width: 0;
+}
+
+.batch-table-wrap .col-row {
+  width: 34px;
+  text-align: center;
+}
+
+.batch-table-wrap .col-hosts {
+  width: 96px;
+}
+
+.batch-table-wrap .col-root {
+  width: 130px;
+}
+
+.batch-table-wrap .col-cidr {
+  width: 150px;
+}
+
+.batch-table-wrap .col-cap {
+  width: 90px;
+  text-align: right;
+}
+
+.batch-table-wrap .col-status {
+  width: 84px;
+  white-space: nowrap;
+}
+
+.batch-table-wrap .col-del {
+  width: 40px;
+  text-align: center;
+}
+
+.batch-errors {
+  margin-top: 10px;
+}
+
+.batch-foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 10px;
+}
+
+.batch-summary {
+  font-size: 12.5px;
+}
+
 .modal h3 {
   margin: 0 0 8px;
   font-size: 15px;

@@ -6,9 +6,10 @@ interface Props {
   roots: RootBlock[];
   onAddReservation: (name: string, cidr: string, note: string) => string[];
   onRequestSubnet: (name: string, hosts: number, rootId: string, note: string) => string[];
+  onOpenBatch: () => void;
 }
 
-export default function NewAllocationForm({ roots, onAddReservation, onRequestSubnet }: Props) {
+export default function NewAllocationForm({ roots, onAddReservation, onRequestSubnet, onOpenBatch }: Props) {
   const [tab, setTab] = useState<'subnet' | 'reserved'>('subnet');
 
   // 按主机数申请
@@ -50,6 +51,9 @@ export default function NewAllocationForm({ roots, onAddReservation, onRequestSu
           命名保留段
         </button>
       </div>
+      <button type="button" className="btn block batch-entry" onClick={onOpenBatch}>
+        批量申请…（逐行填写，整批原子加入）
+      </button>
 
       {tab === 'subnet' ? (
         <form

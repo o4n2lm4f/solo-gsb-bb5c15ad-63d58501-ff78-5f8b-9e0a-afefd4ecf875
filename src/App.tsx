@@ -11,9 +11,12 @@ import {
   validateRoots,
 } from './lib/model';
 import {
+  BatchSubnetRequest,
   MigrationPlan,
+  allocationsFromBatchPlan,
   applyMigration,
   findLowestSlot,
+  planBatchSubnets,
   planMigration,
 } from './lib/planner';
 import { cidrToString, parseCidr, prefixForHosts } from './lib/ip';
@@ -32,6 +35,7 @@ import MigrationModal from './components/MigrationModal';
 import PrefixPolicyModal from './components/PrefixPolicyModal';
 import ConflictModal from './components/ConflictModal';
 import CryptoBackupModal from './components/CryptoBackupModal';
+import BatchApplyModal from './components/BatchApplyModal';
 
 interface MigrationRequest {
   title: string;
@@ -76,6 +80,7 @@ export default function App() {
   const [prefixPolicyOpen, setPrefixPolicyOpen] = useState(false);
   const [backupExportOpen, setBackupExportOpen] = useState(false);
   const [backupImport, setBackupImport] = useState<{ name: string; text: string } | null>(null);
+  const [batchOpen, setBatchOpen] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [conflict, setConflict] = useState<{ local: Revision; remote: Revision } | null>(null);
   const [ready, setReady] = useState(false);
@@ -361,6 +366,28 @@ export default function App() {
     [commit],
   );
 
+  /**
+   * 批量申请：先对全部行做预演（按顺序逐行计算最小前缀并在指定/全部根网段
+   * 寻找最低可用地址，前序行计入占用）。任一行非法或空间不足即拒绝、不改变规划；
+   * 全部通过后以一次可撤销修订原子加入。
+   */
+  const requestBatchSubnets = useCallback(
+    (requests: BatchSubnetRequest[]): string[] => {
+      const plan = planRef.current;
+      const batch = planBatchSubnets(plan, requests);
+      if (!batch.ok) {
+        return batch.lines
+          .filter((l) => l.status !== 'ok')
+          .map((l) => `第 ${l.row} 行${l.name ? `（${l.name}）` : ''}：${l.reason}`);
+      }
+      const added = allocationsFromBatchPlan(batch);
+      commit({ ...plan, allocations: [...plan.allocations, ...added] });
+      showToast(`批量申请已原子加入 ${added.length} 项分配（可一次撤销）`);
+      return [];
+    },
+    [commit, showToast],
+  );
+
   const releaseAllocation = useCallback(
     (id: string) => {
       const plan = planRef.current;
@@ -503,6 +530,7 @@ export default function App() {
             roots={plan.roots}
             onAddReservation={addReservation}
             onRequestSubnet={requestSubnet}
+            onOpenBatch={() => setBatchOpen(true)}
           />
         </aside>
 
@@ -546,6 +574,14 @@ export default function App() {
             showToast('迁移已整批原子应用');
           }}
           onCancel={() => setMigration(null)}
+        />
+      )}
+
+      {batchOpen && !locked && (
+        <BatchApplyModal
+          plan={plan}
+          onSubmit={requestBatchSubnets}
+          onClose={() => setBatchOpen(false)}
         />
       )}
 

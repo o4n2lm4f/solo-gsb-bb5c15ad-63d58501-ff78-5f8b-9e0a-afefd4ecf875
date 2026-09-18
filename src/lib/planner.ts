@@ -12,8 +12,10 @@ import {
   isAlignedCidr,
   overlaps,
   parseCidr,
+  prefixForHosts,
+  usableHosts,
 } from './ip';
-import { Allocation, RootBlock } from './model';
+import { Allocation, Plan, RootBlock, newId, rootCidrs } from './model';
 
 /**
  * 在 roots（按地址升序扫描）中寻找可容纳 /prefix 的最低可用地址。
@@ -35,6 +37,150 @@ export function findLowestSlot(
     }
   }
   return null;
+}
+
+/** 单行批量申请输入（调用方需保证 name 已 trim）。 */
+export interface BatchSubnetRequest {
+  /** 输入行号（1 起，用于失败原因定位） */
+  row: number;
+  name: string;
+  hosts: number;
+  /** 'auto' 表示在全部根网段中寻找，否则为指定 RootBlock id */
+  rootId: string;
+  note?: string;
+}
+
+export type BatchLineStatus = 'ok' | 'invalid' | 'nospace';
+
+/** 单行批量申请的预演结果：成功时给出 CIDR，非法/空间不足时给出失败原因。 */
+export interface BatchSubnetLine {
+  row: number;
+  name: string;
+  hosts: number;
+  rootId: string;
+  note?: string;
+  status: BatchLineStatus;
+  prefix: number | null;
+  cidr: string | null;
+  /** 成功时的可用主机容量 */
+  capacity: number | null;
+  /** 安置到的根网段名称（成功时） */
+  rootName?: string;
+  reason?: string;
+}
+
+export interface BatchSubnetPlan {
+  lines: BatchSubnetLine[];
+  /** 全部行合法且有空间时才允许提交 */
+  ok: boolean;
+}
+
+/**
+ * 批量申请预演（纯函数，不改变规划）：
+ *  - 按输入顺序逐行计算容纳 hosts 台主机的最小前缀；
+ *  - 每行在指定根网段（rootId 为具体 id）或全部根网段（'auto'）中寻找最低可用地址；
+ *  - 已安置的前序行立即计入占用，后序行不能与前序行重叠；
+ *  - 任一行非法（名称为空/主机数不合法/根网段不存在）或空间不足时 ok=false。
+ */
+export function planBatchSubnets(plan: Plan, requests: BatchSubnetRequest[]): BatchSubnetPlan {
+  const allRootCidrs = rootCidrs(plan);
+  const lines: BatchSubnetLine[] = [];
+  const occupied = plan.allocations
+    .map((a) => parseCidr(a.cidr))
+    .filter((c): c is Cidr => c !== null);
+
+  for (const req of requests) {
+    const base = {
+      row: req.row,
+      name: req.name,
+      hosts: req.hosts,
+      rootId: req.rootId,
+      note: req.note,
+    };
+    const errors: string[] = [];
+    if (!req.name.trim()) errors.push('名称不能为空');
+    if (!Number.isInteger(req.hosts) || req.hosts < 1) {
+      errors.push('主机数必须为不小于 1 的整数');
+    }
+
+    const roots =
+      req.rootId === 'auto'
+        ? allRootCidrs
+        : plan.roots
+            .filter((r) => r.id === req.rootId)
+            .map((r) => parseCidr(r.cidr))
+            .filter((c): c is Cidr => c !== null);
+    if (req.rootId !== 'auto' && !plan.roots.some((r) => r.id === req.rootId)) {
+      errors.push('指定的根网段不存在');
+    } else if (roots.length === 0) {
+      errors.push('尚未定义任何根网段');
+    }
+
+    if (errors.length > 0) {
+      lines.push({ ...base, status: 'invalid', prefix: null, cidr: null, capacity: null, reason: errors.join('；') });
+      continue;
+    }
+
+    let prefix: number;
+    try {
+      prefix = prefixForHosts(req.hosts);
+    } catch (e) {
+      lines.push({ ...base, status: 'invalid', prefix: null, cidr: null, capacity: null, reason: (e as Error).message });
+      continue;
+    }
+
+    const slot = findLowestSlot(roots, occupied, prefix);
+    if (!slot) {
+      const target =
+        req.rootId === 'auto' ? null : plan.roots.find((r) => r.id === req.rootId) ?? null;
+      lines.push({
+        ...base,
+        status: 'nospace',
+        prefix,
+        cidr: null,
+        capacity: usableHosts(prefix),
+        reason: target
+          ? `地址空间不足：根网段「${target.name}」(${target.cidr}) 中没有可容纳 ${req.hosts} 台主机（/${prefix}）的空闲块`
+          : `地址空间不足：所有根网段中都没有可容纳 ${req.hosts} 台主机（/${prefix}）的空闲块`,
+      });
+      continue;
+    }
+
+    occupied.push(slot);
+    occupied.sort(compareCidr);
+    const rootName = plan.roots.find((r) => {
+      const rc = parseCidr(r.cidr);
+      return rc !== null && contains(rc, slot);
+    })?.name;
+    lines.push({
+      ...base,
+      status: 'ok',
+      prefix,
+      cidr: cidrToString(slot),
+      capacity: usableHosts(prefix),
+      rootName,
+    });
+  }
+
+  return { lines, ok: lines.every((l) => l.status === 'ok') };
+}
+
+/**
+ * 从通过校验的批量预演结果构造待加入的分配（顺序与输入一致）。
+ * 调用方必须先确认 plan.ok。
+ */
+export function allocationsFromBatchPlan(
+  batch: BatchSubnetPlan,
+  idFn: () => string = () => newId('alloc'),
+): Allocation[] {
+  return batch.lines.map((line) => ({
+    id: idFn(),
+    name: line.name.trim(),
+    kind: 'subnet' as const,
+    prefix: line.prefix!,
+    cidr: line.cidr!,
+    note: line.note?.trim() || undefined,
+  }));
 }
 
 export type MigrationStatus = 'kept' | 'moved' | 'failed';
