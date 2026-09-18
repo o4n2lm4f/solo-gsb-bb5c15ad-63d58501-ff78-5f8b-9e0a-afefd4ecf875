@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { parseCidr } from './ip';
 import { Allocation, RootBlock, validateAllocation, validatePlan, validateRoots } from './model';
-import { applyMigration, findLowestSlot, planMigration } from './planner';
+import {
+  BatchRequestRow,
+  applyMigration,
+  findLowestSlot,
+  planBatchAllocation,
+  planMigration,
+} from './planner';
 
 const root = (name: string, cidr: string): RootBlock => ({ id: `r_${name}`, name, cidr });
 const alloc = (name: string, cidr: string, kind: Allocation['kind'] = 'subnet'): Allocation => ({
@@ -10,6 +16,129 @@ const alloc = (name: string, cidr: string, kind: Allocation['kind'] = 'subnet'):
   kind,
   prefix: parseCidr(cidr)!.prefix,
   cidr,
+});
+
+describe('planBatchAllocation 批量申请预演', () => {
+  const roots = [root('生产', '10.0.0.0/16'), root('办公', '192.168.0.0/16')];
+  const row = (name: string, hosts: number, rootId = 'auto', note = ''): BatchRequestRow => ({
+    name,
+    hosts,
+    rootId,
+    note,
+  });
+
+  it('空批次直接通过', () => {
+    const plan = planBatchAllocation(roots, [], []);
+    expect(plan.ok).toBe(true);
+    expect(plan.items).toEqual([]);
+  });
+
+  it('按输入顺序在最低可用地址落位，前缀为主机数的最小前缀', () => {
+    const plan = planBatchAllocation(roots, [], [row('A', 500), row('B', 50), row('C', 2)]);
+    expect(plan.ok).toBe(true);
+    // 500 台 → /23（510 可用），50 台 → /26（62 可用），2 台 → /31（RFC 3021）
+    expect(plan.items.map((i) => i.cidr)).toEqual([
+      '10.0.0.0/23',
+      '10.0.2.0/26',
+      '10.0.2.64/31',
+    ]);
+    expect(plan.items.map((i) => i.prefix)).toEqual([23, 26, 31]);
+    expect(plan.items.map((i) => i.capacity)).toEqual([510, 62, 2]);
+  });
+
+  it('前面行落位后立即占用空间，后续行跳过', () => {
+    const plan = planBatchAllocation(roots, [], [row('A', 250), row('B', 250)]);
+    expect(plan.ok).toBe(true);
+    expect(plan.items[0].cidr).toBe('10.0.0.0/24');
+    expect(plan.items[1].cidr).toBe('10.0.1.0/24');
+  });
+
+  it('既有分配参与占用，批量在其后寻找空闲块', () => {
+    const existing = [alloc('已占用', '10.0.0.0/25')];
+    const plan = planBatchAllocation(roots, existing, [row('A', 100)]);
+    expect(plan.ok).toBe(true);
+    expect(plan.items[0].cidr).toBe('10.0.0.128/25');
+  });
+
+  it('指定根网段时只在该根网段内寻找', () => {
+    const office = roots[1];
+    const plan = planBatchAllocation(roots, [], [row('A', 100, office.id)]);
+    expect(plan.ok).toBe(true);
+    expect(plan.items[0].cidr).toBe('192.168.0.0/25');
+  });
+
+  it('指定根网段空间不足时失败，即使其他根网段有空闲', () => {
+    const office = roots[1];
+    const existing = [alloc('占满办公', '192.168.0.0/16')];
+    const plan = planBatchAllocation(roots, existing, [row('A', 100, office.id)]);
+    expect(plan.ok).toBe(false);
+    expect(plan.items[0].status).toBe('failed');
+    expect(plan.items[0].reason).toContain('地址空间不足');
+    expect(plan.items[0].reason).toContain('办公');
+    expect(plan.items[0].cidr).toBeNull();
+  });
+
+  it('根网段按地址升序扫描（auto 模式）', () => {
+    // 办公（192.168）地址大于生产（10.0），auto 模式应优先落在生产
+    const plan = planBatchAllocation(roots, [], [row('A', 100)]);
+    expect(plan.items[0].cidr).toBe('10.0.0.0/25');
+  });
+
+  it('非法行不占用空间、不阻断后续行，但整批禁止提交', () => {
+    const plan = planBatchAllocation(roots, [], [
+      row('', 100), // 名称为空
+      row('B', 0), // 主机数非法
+      row('C', 100),
+    ]);
+    expect(plan.ok).toBe(false);
+    expect(plan.items[0].reason).toContain('名称不能为空');
+    expect(plan.items[1].reason).toContain('主机数必须为不小于 1 的整数');
+    // 前两行失败不占空间，第三行仍落在最低地址
+    expect(plan.items[2].status).toBe('ok');
+    expect(plan.items[2].cidr).toBe('10.0.0.0/25');
+  });
+
+  it('非整数与负主机数被拒绝', () => {
+    const plan = planBatchAllocation(roots, [], [row('A', 2.5), row('B', -3)]);
+    expect(plan.ok).toBe(false);
+    expect(plan.items.every((i) => i.status === 'failed')).toBe(true);
+  });
+
+  it('未定义根网段时所有行失败', () => {
+    const plan = planBatchAllocation([], [], [row('A', 100)]);
+    expect(plan.ok).toBe(false);
+    expect(plan.items[0].reason).toContain('尚未定义任何根网段');
+  });
+
+  it('指定的根网段不存在时失败', () => {
+    const plan = planBatchAllocation(roots, [], [row('A', 100, 'root_missing')]);
+    expect(plan.ok).toBe(false);
+    expect(plan.items[0].reason).toContain('指定的根网段不存在');
+  });
+
+  it('整批空间不足时失败行报告所需前缀', () => {
+    const small = [root('小网段', '10.0.0.0/24')];
+    const plan = planBatchAllocation(small, [], [row('A', 200), row('B', 200)]);
+    expect(plan.ok).toBe(false);
+    expect(plan.items[0].status).toBe('ok');
+    expect(plan.items[1].status).toBe('failed');
+    expect(plan.items[1].reason).toContain('/24');
+  });
+
+  it('批量落位结果通过整体规划校验（原子加入后合法）', () => {
+    const existing = [alloc('既有', '10.0.0.0/24')];
+    const rows = [row('A', 500), row('B', 50, roots[1].id), row('C', 2)];
+    const plan = planBatchAllocation(roots, existing, rows);
+    expect(plan.ok).toBe(true);
+    const additions: Allocation[] = plan.items.map((item, i) => ({
+      id: `batch_${i}`,
+      name: item.name,
+      kind: 'subnet',
+      prefix: item.prefix!,
+      cidr: item.cidr!,
+    }));
+    expect(validatePlan({ version: 1, roots, allocations: [...existing, ...additions] })).toEqual([]);
+  });
 });
 
 describe('findLowestSlot 最低可用地址', () => {

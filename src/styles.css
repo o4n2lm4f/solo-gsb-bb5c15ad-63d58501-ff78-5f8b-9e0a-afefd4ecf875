@@ -487,6 +487,44 @@ tr.policy-permit td {
   background: rgba(52, 201, 142, 0.05);
 }
 
+/* ---- 批量申请 ---- */
+.batch-open {
+  margin-top: 10px;
+}
+
+.batch-table input,
+.batch-table select {
+  min-width: 110px;
+  padding: 5px 8px;
+  font-size: 12.5px;
+}
+
+.batch-table td {
+  vertical-align: middle;
+}
+
+tr.batch-failed td {
+  background: rgba(229, 96, 94, 0.06);
+}
+
+tr.batch-ok td {
+  background: rgba(52, 201, 142, 0.04);
+}
+
+.batch-reason {
+  color: var(--red);
+  font-size: 12.5px;
+  white-space: normal;
+}
+
+.batch-summary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 10px;
+  font-size: 12.5px;
+}
+
 /* ---- 弹窗 ---- */
 .modal-backdrop {
   position: fixed;

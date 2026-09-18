@@ -11,9 +11,11 @@ import {
   validateRoots,
 } from './lib/model';
 import {
+  BatchRequestRow,
   MigrationPlan,
   applyMigration,
   findLowestSlot,
+  planBatchAllocation,
   planMigration,
 } from './lib/planner';
 import { cidrToString, parseCidr, prefixForHosts } from './lib/ip';
@@ -28,6 +30,7 @@ import RootsPanel from './components/RootsPanel';
 import TreeView from './components/TreeView';
 import AllocationsPanel from './components/AllocationsPanel';
 import NewAllocationForm from './components/NewAllocationForm';
+import BatchAllocationModal from './components/BatchAllocationModal';
 import MigrationModal from './components/MigrationModal';
 import PrefixPolicyModal from './components/PrefixPolicyModal';
 import ConflictModal from './components/ConflictModal';
@@ -73,6 +76,7 @@ export default function App() {
   const [future, setFuture] = useState<Plan[]>([]);
   const [migration, setMigration] = useState<MigrationRequest | null>(null);
   const [resizeTarget, setResizeTarget] = useState<Allocation | null>(null);
+  const [batchOpen, setBatchOpen] = useState(false);
   const [prefixPolicyOpen, setPrefixPolicyOpen] = useState(false);
   const [backupExportOpen, setBackupExportOpen] = useState(false);
   const [backupImport, setBackupImport] = useState<{ name: string; text: string } | null>(null);
@@ -173,12 +177,14 @@ export default function App() {
           setPlan(rev.plan);
           planRef.current = rev.plan;
           setMigration(null); // 基于旧规划的待确认迁移已过期
+          setBatchOpen(false); // 批量申请预演同样基于旧规划，关闭以防误提交
           setConflict(null); // 可能是冲突期间收到双父合并修订后的自动消解
           showToast('已自动同步其他标签页的更新（可用撤销回到本页此前状态）');
         },
         onConflict: (rev) => {
           setConflict({ local: sync.head, remote: rev });
           setMigration(null);
+          setBatchOpen(false);
           showToast('检测到与其他标签页的分叉更新，请选择合并方式；冲突期间编辑已锁定');
         },
         onWarning: (msg) => showToast(msg),
@@ -361,6 +367,29 @@ export default function App() {
     [commit],
   );
 
+  /** 批量申请：提交时基于最新规划重新预演，全部可安置才整批原子提交（单条历史记录）。 */
+  const applyBatch = useCallback(
+    (rows: BatchRequestRow[]): string[] => {
+      const plan = planRef.current;
+      const result = planBatchAllocation(plan.roots, plan.allocations, rows);
+      if (result.items.length === 0) return ['批量申请至少需要一行'];
+      if (!result.ok) {
+        return ['预演结果已过期或存在失败行：规划未改变，请检查各行后重新提交'];
+      }
+      const additions: Allocation[] = result.items.map((item) => ({
+        id: newId('alloc'),
+        name: item.name.trim(),
+        kind: 'subnet',
+        prefix: item.prefix!,
+        cidr: item.cidr!,
+        note: item.note.trim() || undefined,
+      }));
+      commit({ ...plan, allocations: [...plan.allocations, ...additions] });
+      return [];
+    },
+    [commit],
+  );
+
   const releaseAllocation = useCallback(
     (id: string) => {
       const plan = planRef.current;
@@ -503,6 +532,7 @@ export default function App() {
             roots={plan.roots}
             onAddReservation={addReservation}
             onRequestSubnet={requestSubnet}
+            onOpenBatch={() => setBatchOpen(true)}
           />
         </aside>
 
@@ -546,6 +576,22 @@ export default function App() {
             showToast('迁移已整批原子应用');
           }}
           onCancel={() => setMigration(null)}
+        />
+      )}
+
+      {batchOpen && !locked && (
+        <BatchAllocationModal
+          roots={plan.roots}
+          allocations={plan.allocations}
+          onSubmit={(rows) => {
+            const errs = applyBatch(rows);
+            if (errs.length === 0) {
+              setBatchOpen(false);
+              showToast(`批量申请完成：已原子加入 ${rows.length} 个子网（可一次撤销）`);
+            }
+            return errs;
+          }}
+          onClose={() => setBatchOpen(false)}
         />
       )}
 

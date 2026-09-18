@@ -10,6 +10,7 @@ describe('App 冒烟测试', () => {
     expect(html).toContain('根网段');
     expect(html).toContain('地址空间树');
     expect(html).toContain('新建分配');
+    expect(html).toContain('批量申请');
     expect(html).toContain('前缀策略校验');
     expect(html).toContain('加密导出');
     expect(html).toContain('加密导入');

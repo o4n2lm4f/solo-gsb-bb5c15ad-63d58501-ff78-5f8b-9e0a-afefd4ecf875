@@ -12,6 +12,8 @@ import {
   isAlignedCidr,
   overlaps,
   parseCidr,
+  prefixForHosts,
+  usableHosts,
 } from './ip';
 import { Allocation, RootBlock } from './model';
 
@@ -38,6 +40,118 @@ export function findLowestSlot(
 }
 
 export type MigrationStatus = 'kept' | 'moved' | 'failed';
+
+/** 批量申请的一行输入（rootId 为 'auto' 时在全部根网段中寻找） */
+export interface BatchRequestRow {
+  name: string;
+  hosts: number;
+  rootId: string;
+  note: string;
+}
+
+export interface BatchPlanItem {
+  /** 输入顺序下标（0 基） */
+  index: number;
+  name: string;
+  hosts: number;
+  rootId: string;
+  note: string;
+  /** 最小前缀；输入非法时为 null */
+  prefix: number | null;
+  /** 可用主机容量；prefix 非法时为 null */
+  capacity: number | null;
+  /** 拟落位（规范化 CIDR）；失败时为 null */
+  cidr: string | null;
+  status: 'ok' | 'failed';
+  reason?: string;
+}
+
+export interface BatchPlan {
+  items: BatchPlanItem[];
+  /** 全部行可安置（无 failed）时才允许提交 */
+  ok: boolean;
+}
+
+/**
+ * 批量申请预演（纯函数，不产生副作用）：
+ * 按输入顺序逐行处理——为每行计算可容纳主机的最小前缀，
+ * 在指定根网段（或全部根网段，按地址升序）中寻找最低可用地址；
+ * 成功行立即占用空间，后续行看到的是前面行落位后的剩余空间；
+ * 失败行不占用空间、不阻断后续行预演，但整批 ok = false（调用方禁止提交）。
+ */
+export function planBatchAllocation(
+  roots: RootBlock[],
+  existing: Allocation[],
+  rows: BatchRequestRow[],
+): BatchPlan {
+  const allRoots = roots
+    .map((r) => ({ root: r, cidr: parseCidr(r.cidr) }))
+    .filter((x): x is { root: RootBlock; cidr: Cidr } => x.cidr !== null)
+    .sort((a, b) => a.cidr.base - b.cidr.base);
+
+  const occupied: Cidr[] = existing
+    .map((a) => parseCidr(a.cidr))
+    .filter((c): c is Cidr => c !== null)
+    .sort(compareCidr);
+
+  const items: BatchPlanItem[] = rows.map((row, index) => {
+    const item: BatchPlanItem = {
+      index,
+      name: row.name,
+      hosts: row.hosts,
+      rootId: row.rootId,
+      note: row.note,
+      prefix: null,
+      capacity: null,
+      cidr: null,
+      status: 'failed',
+    };
+    const errors: string[] = [];
+    if (!row.name.trim()) errors.push('名称不能为空');
+    if (!Number.isInteger(row.hosts) || row.hosts < 1) {
+      errors.push('主机数必须为不小于 1 的整数');
+    }
+    if (errors.length > 0) {
+      item.reason = errors.join('；');
+      return item;
+    }
+
+    const prefix = prefixForHosts(row.hosts);
+    item.prefix = prefix;
+    item.capacity = usableHosts(prefix);
+
+    if (allRoots.length === 0) {
+      item.reason = '尚未定义任何根网段';
+      return item;
+    }
+    const scoped =
+      row.rootId === 'auto'
+        ? allRoots
+        : allRoots.filter((r) => r.root.id === row.rootId);
+    if (scoped.length === 0) {
+      item.reason = '指定的根网段不存在';
+      return item;
+    }
+
+    const slot = findLowestSlot(scoped.map((r) => r.cidr), occupied, prefix);
+    if (!slot) {
+      const scope =
+        row.rootId === 'auto'
+          ? '全部根网段'
+          : `根网段「${scoped[0].root.name}」`;
+      item.reason = `地址空间不足：${scope}中没有可容纳 ${row.hosts} 台主机（/${prefix}）的空闲块`;
+      return item;
+    }
+
+    occupied.push(slot);
+    occupied.sort(compareCidr);
+    item.cidr = cidrToString(slot);
+    item.status = 'ok';
+    return item;
+  });
+
+  return { items, ok: items.every((i) => i.status === 'ok') };
+}
 
 export interface MigrationItem {
   allocId: string;
